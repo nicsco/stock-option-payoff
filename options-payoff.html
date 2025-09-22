@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Options Payoff Visualiser</title>
+    <!-- 1. Load Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 2. Load D3.js for charting -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <!-- 3. Configure Tailwind to use the Inter font -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                },
+            },
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom D3 chart styles */
+        .axis-label {
+            font-size: 0.75rem;
+            fill: #4b5563; /* gray-600 */
+        }
+        .profit-area {
+            fill: #dcfce7; /* green-100 */
+            opacity: 0.6;
+        }
+        .profit-line-positive {
+            fill: none;
+            stroke: #22c55e; /* green-500 */
+            stroke-width: 2.5px;
+        }
+        .profit-line-negative {
+            fill: none;
+            stroke: #ef4444; /* red-500 */
+            stroke-width: 2.5px;
+        }
+        .zero-line {
+            stroke: #6b7280; /* gray-500 */
+            stroke-width: 1px;
+            stroke-dasharray: 4;
+        }
+        .strike-text {
+            font-size: 10px;
+            font-weight: bold;
+            text-anchor: middle;
+            cursor: default;
+        }
+        .axis-title {
+            font-size: 0.875rem;
+            fill: #1f2937; /* gray-800 */
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body class="h-full flex items-center justify-center p-4 sm:p-6 lg:p-8">
+
+    <div class="w-full max-w-5xl mx-auto bg-white shadow-xl rounded-2xl p-6 sm:p-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
+        
+        <!-- Column 1: Form Inputs -->
+        <div class="lg:col-span-1">
+            <h1 class="text-2xl font-bold text-gray-800 mb-2">Options Payoff Visualiser</h1>
+            <p class="text-sm text-gray-600 mb-6">Combine multiple options to see the net profit/loss.</p>
+            
+            <form id="chart-form" class="space-y-4">
+                
+                <!-- Chart Range Inputs -->
+                <fieldset class="border-t border-gray-200 pt-4">
+                    <legend class="text-sm font-medium text-gray-600">Chart Range</legend>
+                    <div class="grid grid-cols-2 gap-x-3 mt-2">
+                        <div>
+                            <label for="x-min" class="block text-sm font-medium text-gray-700">Stock Price Min</label>
+                            <input type="number" id="x-min" value="140" class="chart-input mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                        </div>
+                        <div>
+                            <label for="x-max" class="block text-sm font-medium text-gray-700">Stock Price Max</label>
+                            <input type="number" id="x-max" value="260" class="chart-input mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                        </div>
+                    </div>
+                </fieldset>
+
+                <!-- Dynamic Operation Inputs -->
+                <fieldset class="border-t border-gray-200 pt-4">
+                    <legend class="text-sm font-medium text-gray-600">Operations (Legs)</legend>
+                    <!-- Container for dynamic operation rows -->
+                    <div id="operations-list" class="space-y-3 mt-2">
+                        <!-- Operation rows will be injected here by JavaScript -->
+                    </div>
+                    
+                    <!-- Add Operation Button -->
+                    <button type="button" id="add-operation" class="mt-3 w-full flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                        <svg class="w-5 h-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                        </svg>
+                        Add Option
+                    </button>
+                </fieldset>
+            </form>
+        </div>
+
+        <!-- Column 2: Chart Display -->
+        <div class="lg:col-span-2 min-h-[400px] lg:min-h-[450px]">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">Combined Profit / Loss Diagram</h2>
+            <div id="chart-container" class="w-full h-full border border-gray-200 rounded-lg p-4">
+                <!-- SVG element where D3 will draw the chart -->
+                <svg id="chart-svg" width="100%" height="100%"></svg>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // 4. D3 and Input-handling JavaScript
+
+        // === GLOBAL STATE ===
+        /**
+         * @typedef {Object} Operation
+         * @property {number} id - A unique ID for the operation.
+         * @property {string} type - e.g., "LongCall".
+         * @property {number} strike - The strike price.
+         * @property {number} premium - The premium cost.
+         */
+        
+        /** @type {Operation[]} */
+        let operationsList = []; // This will hold our list of operation objects.
+        
+        
+        // === CHART SETUP ===
+        const margin = { top: 20, right: 30, bottom: 50, left: 50 };
+        const chartContainer = document.getElementById('chart-container');
+        const svg = d3.select("#chart-svg");
+        const operationsListContainer = document.getElementById('operations-list');
+        
+        const resizeObserver = new ResizeObserver(entries => {
+            for (let entry of entries) {
+                drawChart();
+            }
+        });
+        resizeObserver.observe(chartContainer);
+
+        // === HELPER FUNCTIONS ===
+        
+        // --- NEW: Function to encode the state into the URL ---
+        /**
+         * Encodes the current form state (range and operations) into the URL query string.
+         */
+        function updateURL() {
+            const params = new URLSearchParams();
+            
+            // Add chart range
+            params.set('xmin', document.getElementById('x-min').value);
+            params.set('xmax', document.getElementById('x-max').value);
+            
+            // Add all operations
+            // We use `t[]`, `s[]`, `p[]` to represent arrays in the URL
+            for (const op of operationsList) {
+                params.append('t[]', op.type);
+                params.append('s[]', op.strike);
+                params.append('p[]', op.premium);
+            }
+            
+            // Update the URL in the browser without reloading
+            const newUrl = `${window.location.pathname}?${params.toString()}`;
+            window.history.pushState({ path: newUrl }, '', newUrl);
+        }
+
+        // --- NEW: Function to load state from the URL on page load ---
+        /**
+         * Reads the URL query string and populates the initial state.
+         * If no valid state is found, it sets up the default operation.
+         */
+        function loadStateFromURL() {
+            const urlParams = new URLSearchParams(window.location.search);
+
+            // Check if valid URL state exists
+            if (!urlParams.has('xmin') || !urlParams.has('t[]')) {
+                // No valid state, set up the default
+                operationsList.push({ id: Date.now(), type: 'LongCall', strike: 200, premium: 5 });
+                document.getElementById('x-min').value = 140;
+                document.getElementById('x-max').value = 260;
+                return; // Exit
+            }
+
+            // Valid state found, load it
+            document.getElementById('x-min').value = urlParams.get('xmin') || 140;
+            document.getElementById('x-max').value = urlParams.get('xmax') || 260;
+            
+            const types = urlParams.getAll('t[]');
+            const strikes = urlParams.getAll('s[]');
+            const premiums = urlParams.getAll('p[]');
+            
+            operationsList = []; // Clear the default
+            
+            for (let i = 0; i < types.length; i++) {
+                if (types[i] && strikes[i] !== undefined && premiums[i] !== undefined) {
+                    operationsList.push({
+                        id: Date.now() + i, // Create a new unique ID
+                        type: types[i],
+                        strike: +strikes[i] || 0,
+                        premium: +premiums[i] || 0
+                    });
+                }
+            }
+            
+            // If something went wrong and the list is empty, add a default
+            if (operationsList.length === 0) {
+                 operationsList.push({ id: Date.now(), type: 'LongCall', strike: 200, premium: 5 });
+            }
+        }
+
+        /**
+         * Reads the static chart range values from the form.
+         * @returns {Object} An object containing {xMin, xMax}.
+         */
+        function getChartRange() {
+            let xMin = +document.getElementById('x-min').value || 0;
+            let xMax = +document.getElementById('x-max').value || 100;
+            
+            if (xMin >= xMax) {
+                xMin = xMax - 1;
+                document.getElementById('x-min').value = xMin;
+            }
+            return { xMin, xMax };
+        }
+
+        /**
+         * Calculates profit for a SINGLE operation at a given stock price.
+         * @param {Operation} op - The operation object.
+         * @param {number} stockPrice - The stock price to calculate at.
+         * @returns {number} The calculated profit or loss.
+         */
+        function calculateSingleOperationProfit(op, stockPrice) {
+            switch (op.type) {
+                case 'LongCall':
+                    return Math.max(0, stockPrice - op.strike) - op.premium;
+                case 'LongPut':
+                    return Math.max(0, op.strike - stockPrice) - op.premium;
+                case 'ShortCall':
+                    return op.premium - Math.max(0, stockPrice - op.strike);
+                case 'ShortPut':
+                    return op.premium - Math.max(0, op.strike - stockPrice);
+                default:
+                    return 0;
+            }
+        }
+        
+        /**
+         * Calculates the COMBINED profit/loss data points.
+         * @param {Operation[]} operations - The array of all operation objects.
+         * @param {number} xMin - The minimum stock price.
+         * @param {number} xMax - The maximum stock price.
+         * @returns {Array} An array of {stockPrice, profit} objects.
+         */
+        function calculateProfitLossData(operations, xMin, xMax) {
+            const data = [];
+            // Use more steps for a smoother area chart
+            const steps = 400;
+            const stepSize = (xMax - xMin) / steps; 
+
+            for (let i = 0; i <= steps; i++) {
+                const stockPrice = xMin + (i * stepSize);
+                let totalProfit = 0;
+
+                // Sum the profit/loss from ALL operations
+                for (const op of operations) {
+                    totalProfit += calculateSingleOperationProfit(op, stockPrice);
+                }
+                
+                data.push({ stockPrice: stockPrice, profit: totalProfit });
+            }
+            return data;
+        }
+
+        /**
+         * Renders the list of operation inputs in the form.
+         */
+        function renderOperationsList() {
+            // Clear the existing list
+            operationsListContainer.innerHTML = '';
+            
+            if (operationsList.length === 0) {
+                 operationsListContainer.innerHTML = `<p class="text-sm text-gray-500 text-center">No operations added. Click below to start.</p>`;
+            }
+
+            operationsList.forEach(op => {
+                const opRow = document.createElement('div');
+                opRow.className = 'grid grid-cols-12 gap-x-2 items-end';
+                opRow.setAttribute('data-id', op.id);
+
+                opRow.innerHTML = `
+                    <div class="col-span-6">
+                        <label for="op-type-${op.id}" class="block text-xs font-medium text-gray-700">Type</label>
+                        <select id="op-type-${op.id}" class="chart-input op-input op-type mt-1 block w-full px-2 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                            <option value="LongCall" ${op.type === 'LongCall' ? 'selected' : ''}>Call (Long)</option>
+                            <option value="LongPut" ${op.type === 'LongPut' ? 'selected' : ''}>Put (Long)</option>
+                            <option value="ShortCall" ${op.type === 'ShortCall' ? 'selected' : ''}>Call (Short)</option>
+                            <option value="ShortPut" ${op.type === 'ShortPut' ? 'selected' : ''}>Put (Short)</option>
+                        </select>
+                    </div>
+                    <div class="col-span-3">
+                        <label for="strike-price-${op.id}" class="block text-xs font-medium text-gray-700">Strike</label>
+                        <input type="number" id="strike-price-${op.id}" value="${op.strike}" class="chart-input op-input op-strike mt-1 block w-full px-2 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    </div>
+                    <div class="col-span-2">
+                        <label for="premium-${op.id}" class="block text-xs font-medium text-gray-700">Prem</label>
+                        <input type="number" id="premium-${op.id}" value="${op.premium}" min="0" class="chart-input op-input op-premium mt-1 block w-full px-2 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    </div>
+                    <div class="col-span-1">
+                        <button type="button" class="remove-operation p-1 text-gray-400 hover:text-red-600 focus:outline-none" title="Remove operation">
+                            <svg class="w-6 h-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                `;
+                operationsListContainer.appendChild(opRow);
+            });
+            
+            // Re-attach listeners for the newly created elements
+            attachOperationListeners();
+        }
+
+        /**
+         * Attaches event listeners to dynamic operation rows.
+         */
+        function attachOperationListeners() {
+            // Remove button listeners
+            document.querySelectorAll('.remove-operation').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const row = e.currentTarget.closest('[data-id]');
+                    const id = +row.getAttribute('data-id');
+                    operationsList = operationsList.filter(op => op.id !== id);
+                    renderOperationsList();
+                    drawChart();
+                    updateURL(); // --- Save state to URL
+                });
+            });
+
+            // Input listeners (for type, strike, premium)
+            document.querySelectorAll('.op-input').forEach(input => {
+                input.addEventListener('input', (e) => {
+                    const row = e.currentTarget.closest('[data-id]');
+                    const id = +row.getAttribute('data-id');
+                    const op = operationsList.find(o => o.id === id);
+                    
+                    if (op) {
+                        if (e.currentTarget.classList.contains('op-type')) {
+                            op.type = e.currentTarget.value;
+                        } else if (e.currentTarget.classList.contains('op-strike')) {
+                            op.strike = +e.currentTarget.value;
+                        } else if (e.currentTarget.classList.contains('op-premium')) {
+                            op.premium = +e.currentTarget.value;
+                        }
+                    }
+                    drawChart();
+                    updateURL(); // --- Save state to URL
+                });
+            });
+        }
+        
+        /**
+         * Adds a new default operation to the list.
+         */
+        function addOperation() {
+            const newOp = {
+                id: Date.now(), // Simple unique ID
+                type: 'LongCall',
+                strike: 200, 
+                premium: 5
+            };
+            operationsList.push(newOp);
+            renderOperationsList();
+            drawChart();
+            updateURL(); // --- Save state to URL
+        }
+
+        // --- Helper function for marker symbol ---
+        function getMarkerSymbol(type) {
+            switch (type) {
+                case 'LongCall': return '+c';
+                case 'LongPut': return '+p';
+                case 'ShortCall': return '-c';
+                case 'ShortPut': return '-p';
+                default: return '?';
+            }
+        }
+
+        // --- Helper function for marker fill color ---
+        function getMarkerFill(type) {
+            return (type === 'ShortCall' || type === 'ShortPut') ? '#ef4444' : '#374151'; // red-500 for short, gray-700 for long
+        }
+
+        /**
+         * Main function to draw/update the D3 line chart.
+         */
+        function drawChart() {
+            // 1. Get Data
+            const { xMin, xMax } = getChartRange();
+            const data = calculateProfitLossData(operationsList, xMin, xMax); // Use global list
+
+            // 2. Get Dimensions
+            const width = chartContainer.clientWidth - margin.left - margin.right;
+            const height = chartContainer.clientHeight - margin.top - margin.bottom;
+            
+            // 3. Clear previous chart
+            svg.selectAll("*").remove();
+            
+            // Handle empty state
+            if (width <= 0 || height <= 0 || data.length === 0) {
+                return;
+            }
+
+            // 4. Create main group element
+            const g = svg.append("g")
+                .attr("transform", `translate(${margin.left},${margin.top})`);
+
+            // --- 5. SCALES ---
+            
+            const xScale = d3.scaleLinear()
+                .domain([xMin, xMax])
+                .range([0, width]);
+
+            const yMin = d3.min(data, d => d.profit);
+            const yMax = d3.max(data, d => d.profit);
+            const yPadding = (yMax - yMin) * 0.1; 
+            
+            const yScale = d3.scaleLinear()
+                .domain([
+                    (yMin || 0) - yPadding - 5, 
+                    (yMax || 0) + yPadding + 5
+                ]) 
+                .range([height, 0]); 
+
+            // --- 6. AXES ---
+            
+            const xAxis = d3.axisBottom(xScale).ticks(5);
+            g.append("g")
+                .attr("transform", `translate(0,${height})`)
+                .call(xAxis)
+                .selectAll("text")
+                .attr("class", "axis-label");
+
+            const yAxis = d3.axisLeft(yScale).ticks(5);
+            g.append("g")
+                .call(yAxis)
+                .selectAll("text")
+                .attr("class", "axis-label");
+                
+            g.append("text")
+                .attr("class", "axis-title")
+                .attr("text-anchor", "middle")
+                .attr("x", width / 2)
+                .attr("y", height + margin.bottom - 10)
+                .text("Stock Price at Expiration");
+
+            g.append("text")
+                .attr("class", "axis-title")
+                .attr("text-anchor", "middle")
+                .attr("transform", "rotate(-90)")
+                .attr("y", -margin.left + 15)
+                .attr("x", -height / 2)
+                .text("Profit / Loss");
+
+            // --- 7. CHART LINES ---
+            
+            const yZero = yScale(0); 
+            
+            g.append("clipPath")
+                .attr("id", "clip-positive")
+                .append("rect")
+                .attr("x", 0)
+                .attr("y", 0)
+                .attr("width", width)
+                .attr("height", yZero > 0 ? yZero : 0); 
+
+            g.append("clipPath")
+                .attr("id", "clip-negative")
+                .append("rect")
+                .attr("x", 0)
+                .attr("y", yZero < height ? yZero : height) 
+                .attr("width", width)
+                .attr("height", yZero < height ? (height - yZero) : 0); 
+            
+            // --- Add Profit Area Background ---
+            const areaGenerator = d3.area()
+                .x(d => xScale(d.stockPrice))
+                .y0(yZero) // Bottom of the area is the zero line
+                .y1(d => yScale(d.profit)) // Top of the area is the profit line
+                .curve(d3.curveMonotoneX);
+
+            g.append("path")
+                .datum(data)
+                .attr("class", "profit-area")
+                .attr("clip-path", "url(#clip-positive)") // Clip to only positive area
+                .attr("d", areaGenerator);
+
+
+            // --- Draw Zero Line ---
+            if (yScale.domain()[0] < 0 && yScale.domain()[1] > 0) {
+                g.append("line")
+                    .attr("class", "zero-line")
+                    .attr("x1", 0)
+                    .attr("y1", yZero)
+                    .attr("x2", width)
+                    .attr("y2", yZero);
+            }
+            
+            // --- Add Strike Price Markers ---
+            
+            // Group operations by strike price
+            const strikeGroups = {};
+            for (const op of operationsList) {
+                if (op.strike >= xMin && op.strike <= xMax) {
+                    if (!strikeGroups[op.strike]) {
+                        strikeGroups[op.strike] = [];
+                    }
+                    strikeGroups[op.strike].push(op);
+                }
+            }
+            // Convert to an array for D3
+            const strikeData = Object.entries(strikeGroups).map(([strike, ops]) => ({
+                strike: +strike,
+                operations: ops
+            }));
+
+            // Create groups for each unique strike price
+            const strikeGroupsG = g.selectAll(".strike-group")
+                .data(strikeData)
+                .enter()
+                .append("g")
+                .attr("class", "strike-group")
+                .attr("transform", d => `translate(${xScale(d.strike)}, 0)`); // Position group horizontally
+
+            // Add text labels within each group, stacked vertically
+            strikeGroupsG.selectAll(".strike-text")
+                .data(d => d.operations.reverse()) // Reverse to stack from bottom-up visually
+                .enter()
+                .append("text")
+                .attr("class", "strike-text")
+                .attr("x", 0) // Centered horizontally within the group
+                .attr("y", (d, i) => yZero - 6 - (i * 12)) // Stack upwards
+                .attr("fill", d => getMarkerFill(d.type))
+                .text(d => getMarkerSymbol(d.type))
+                .append("title")
+                .text(d => `${d.type} @ ${d.strike}, Premium: ${d.premium}`);
+
+
+            // --- Draw Profit/Loss Lines ---
+            const lineGenerator = d3.line()
+                .x(d => xScale(d.stockPrice))
+                .y(d => yScale(d.profit))
+                .curve(d3.curveMonotoneX);
+            
+            g.append("path")
+                .datum(data)
+                .attr("class", "profit-line-positive")
+                .attr("clip-path", "url(#clip-positive)") 
+                .attr("d", lineGenerator);
+
+            g.append("path")
+                .datum(data)
+                .attr("class", "profit-line-negative")
+                .attr("clip-path", "url(#clip-negative)") 
+                .attr("d", lineGenerator);
+        }
+
+        // === EVENT LISTENERS ===
+        
+        /**
+         * Attaches listeners to static elements.
+         */
+        function initializeListeners() {
+            // Listeners for static chart range inputs
+            document.querySelectorAll('#x-min, #x-max').forEach(input => {
+                input.addEventListener('input', () => {
+                    drawChart(); 
+                    updateURL(); // --- Save state to URL
+                });
+            });
+
+            // Listener for the "Add Operation" button
+            document.getElementById('add-operation').addEventListener('click', addOperation);
+        }
+
+        // === INITIALIZATION ===
+        
+        initializeListeners();
+        // --- Load state from URL (or defaults) *before* drawing
+        loadStateFromURL(); 
+        // Render the list based on what was loaded
+        renderOperationsList(); 
+        // Draw the initial chart
+        drawChart(); 
+        // We don't call updateURL() here, as the URL is already what we just loaded.
+
+    </script>
+</body>
+</html>
+
